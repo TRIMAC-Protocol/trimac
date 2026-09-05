@@ -250,6 +250,18 @@ code:not(pre code) {
     background: rgba(196, 30, 58, 0.1);
 }
 
+.btn-accent {
+    background: var(--color-accent-gold);
+    color: var(--color-bg-primary);
+    box-shadow: 0 4px 14px rgba(212, 168, 67, 0.3);
+}
+.btn-accent:hover {
+    background: #e8b84a;
+    transform: translateY(-2px);
+    box-shadow: 0 6px 20px rgba(212, 168, 67, 0.4);
+}
+.btn-accent:active { transform: translateY(0); }
+
 .btn-outline {
     background: transparent;
     color: var(--color-text-secondary);
