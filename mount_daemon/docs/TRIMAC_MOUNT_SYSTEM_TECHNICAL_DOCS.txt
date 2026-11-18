@@ -1,0 +1,325 @@
+================================================================================
+TRIMAC v5.7.1 掛載守護進程系統 - 技術文檔
+================================================================================
+文件類型：技術白皮書 + 部署指南 + 管理手冊
+適用對象：TRIMAC 艦隊人類運營者 / 指揮官 Dennis Lau
+系統範圍：TRIMAC Mount Daemon (TRI-MOUNT-01)
+編寫日期：2026-11-17
+狀態：生產環境已部署並驗證
+
+--------------------------------------------------------------------------------
+1. 系統概覽 (Technical White Paper)
+--------------------------------------------------------------------------------
+
+1.1 目的
+TRIMAC 掛載守護進程系統 (TRI-MOUNT-01) 是專門為 TRIMAC v5.7.1 艦隊
+架構研發的 Synology NAS 合併卷自動重掛載 + 本地緩衝寫入層。其核心
+使命是確保 /mnt/n (Windows N: 盤經 WSL2 9p/drvfs 掛載) 在 Synology NAS
+斷電、斷線或 SMB 連線休眠後，能在最短時間內自動恢復掛載，並
+在離線期間將所有寫入操作緩衝到本地，待掛載恢復後自動回寫並
+驗證 SHA-256 完整性，實現 Zero-Mock 寫入保證。
+
+1.2 問題背景
+TRIMAC 艦隊的核心儲存池 TRIMAC-POOL 由 3 部 Synology NAS (DS218+ +
+2x DS214se) 經 NFS + MergerFS 融合，通過 Windows SMB 入口
+\\192.168.50.111\TRIMAC-POOL 掛載到 WSL2 的 /mnt/n (9p/drvfs)。
+
+當 Synology NAS 斷電或 Windows 端 SMB 連線斷開時，/mnt/n 會變成
+不可讀寫的殘留目錄。此時 TRIMAC 艦隊的所有寫入操作 (審核證書、
+分片推理結果、成品歸檔) 都會失敗，導致 Zero-Mock 原則被違反。
+
+1.3 解決方案
+本系統採用三層防禦：
+  (a) 15 秒巡檢：MountDaemon 每 15 秒檢查 /mnt/n 是否為健康掛載點
+  (b) setuid helper：trimac-mount-helper 以 root 權限執行 mount/umount，
+      繞過 systemd user service 權限限制
+  (c) 本地緩衝寫入層：離線時寫入 /home/denni/trimac_buffer/，恢復後
+      自動刷新並驗證 SHA-256
+
+1.4 架構圖 (文字版)
+[Synology NAS x3] --SMB/MergerFS--> [Windows N: 盤] --WSL2 9p/drvfs--> [/mnt/n]
+                                                   |
+                                                   v
+                                        [trimac-mount-daemon.service] (root)
+                                                   |
+                                                   v
+                                        [trimac-mount-helper] (setuid root)
+                                                   |
+                                                   v
+                                        [trimac_mount_client.py] (供艦隊調用)
+
+--------------------------------------------------------------------------------
+2. 軟件組成 (Software Components)
+--------------------------------------------------------------------------------
+
+2.1 核心執行檔
+
+檔案：/home/denni/trimac_mount_daemon.py
+作用：主守護進程，以 systemd 系統服務 (root) 運行
+功能：
+  - 每 15 秒檢查 /mnt/n 掛載點健康度 (exists + ismount + 讀寫測試)
+  - 偵測離線後自動觸發重掛載流程
+  - 調用 trimac-mount-helper 執行 mount/umount
+  - 離線期間將寫入緩衝到 /home/denni/trimac_buffer/
+  - 掛載恢復後自動刷新緩衝隊列並驗證 SHA-256
+  - 透過 Telegram 發送離線/恢復異常通知
+
+檔案：/home/denni/trimac_mount_helper.py
+作用：setuid root 包裝腳本，執行實際的 mount/umount 操作
+功能：
+  - mount: 掛載 Windows N: 盤到 /mnt/n (drvfs)
+  - umount: 強制卸載 /mnt/n
+  - cleanup: 清理殘留目錄並重建
+  - status: 檢查掛載狀態
+  - wake: 喚醒 Windows 端 SMB 連線 (dir N:\)
+
+檔案：/home/denni/trimac_mount_helper.c
+作用：C 語言編譯的 setuid 二進制包裝器，啟動 Python helper
+作用：確保 helper 以 root 權限執行，繞過 sudo 權限限制
+
+安裝路徑：/usr/local/bin/trimac-mount-helper (setuid root, 4755)
+
+2.2 客戶端庫
+
+檔案：/home/denni/trimac_mount_client.py
+作用：供其他 TRIMAC 模組導入使用的 Python 庫
+功能：
+  - write(filepath, data): 標準寫入入口
+  - write_text(filepath, text): 寫入文本文件
+  - write_json(filepath, obj): 寫入 JSON 文件
+  - write_to_committed_vault/task_id/shard_id: 寫入 04_committed_vault
+  - write_to_staging_wip/task_id/shard_id: 寫入 02_staging_wip
+  - write_to_audit_receipts/task_id/shard_id: 寫入 03_audit_receipts
+  - write_to_inbox_tasks/task_id/filename: 寫入 01_inbox_tasks
+  - get_stats(): 獲取緩衝統計
+  - get_mount_state(): 獲取當前掛載狀態
+  - force_flush(): 強制刷新緩衝隊列
+  - wait_until_healthy(timeout): 等待掛載點恢復
+
+2.3 systemd 服務
+
+檔案：/etc/systemd/system/trimac-mount-daemon.service
+作用：系統級 systemd 服務，以 root 權限運行守護進程
+關鍵設置：
+  - AmbientCapabilities=CAP_SYS_ADMIN CAP_DAC_OVERRIDE
+  - PrivateMounts=no, MountFlags=shared
+  - Restart=always, RestartSec=10
+  - ReadWritePaths=/mnt/n /home/denni/trimac_buffer /home/denni/trimac_logs
+
+2.4 本地緩衝目錄
+
+路徑：/home/denni/trimac_buffer/
+作用：離線期間暫存寫入數據 (JSON 元數據 + BIN 二進制)
+結構：{timestamp}_{sha256_prefix}.json + {timestamp}_{sha256_prefix}.bin
+
+2.5 日誌目錄
+
+路徑：/home/denni/trimac_logs/
+檔案：trimac_mount_daemon.log
+作用：記錄所有掛載狀態變化、重掛載嘗試、異常通知
+
+--------------------------------------------------------------------------------
+3. 部署細節 (Deployment Details)
+--------------------------------------------------------------------------------
+
+3.1 部署步驟
+
+步驟 1: 編譯 C 包裝器
+  gcc -o /home/denni/trimac_mount_helper /home/denni/trimac_mount_helper.c
+
+步驟 2: 安裝 helper (需要 sudo)
+  sudo cp /home/denni/trimac_mount_helper /usr/local/bin/trimac-mount-helper
+  sudo cp /home/denni/trimac_mount_helper.py /usr/local/bin/trimac-mount-helper.py
+  sudo chown root:root /usr/local/bin/trimac-mount-helper
+  sudo chmod 4755 /usr/local/bin/trimac-mount-helper
+
+步驟 3: 安裝 systemd 服務
+  sudo cp /home/denni/trimac-mount-daemon-system.service \
+      /etc/systemd/system/trimac-mount-daemon.service
+  sudo systemctl daemon-reload
+  sudo systemctl enable trimac-mount-daemon.service
+  sudo systemctl start trimac-mount-daemon.service
+
+步驟 4: 建立緩衝與日誌目錄
+  mkdir -p /home/denni/trimac_buffer /home/denni/trimac_logs
+
+3.2 掛載點配置
+  MOUNT_POINT = /mnt/n
+  底層：Windows N: 盤 (Synology TRIMAC-POOL via SMB/MergerFS)
+  掛載方式：WSL2 drvfs (9p)
+  掛載選項：rw,relatime,aname=drvfs;path=N:;symlinkroot=/mnt/,cache=0x5
+
+3.3 四區目錄結構 (在 /mnt/n 下)
+  01_inbox_tasks/   - 任務藍圖
+  02_staging_wip/   - 兩大運算支團 8 個分片執行中暫存檔
+  03_audit_receipts/ - 審核證書 (PASS/REDO/REVISE_PROMPT/ESCALATE)
+  04_committed_vault/ - 審核 PASS 後正式歸檔成品
+
+3.4 測試驗證
+  - 手動 umount /mnt/n 後，daemon 15 秒內偵測到離線
+  - 自動調用 helper 重掛載，驗證 /proc/mounts 恢復
+  - 狀態從 離線 -> 健康，Telegram 發送恢復通知
+  - 緩衝寫入層：離線時寫入本地，恢復後自動回寫並驗證 SHA-256
+
+--------------------------------------------------------------------------------
+4. 設計原因與理由 (Design Rationale)
+--------------------------------------------------------------------------------
+
+4.1 為什麼使用 setuid helper 而不是 sudo？
+  systemctl --user 服務以普通用戶運行，無權限執行 mount/umount。
+  配置 sudo NOPASSWD 需要修改 /etc/sudoers，風險較高且每次都需
+  密碼驗證。setuid helper 以 root 身份執行，一次安裝永久有效，
+  且只暴露 mount/umount/cleanup/status/wake 五個固定指令，攻擊面小。
+
+4.2 為什麼不直接用 Linux mount 命令？
+  WSL2 的 drvfs 掛載在 systemd 系統服務內執行 mount -t drvfs 會
+  失敗 (特殊裝置 N: 不存在)。必須透過 wsl.exe -d Ubuntu -u root --
+  mount -t drvfs N: /mnt/n 才能成功。helper 內部已處理此細節。
+
+4.3 為什麼需要本地緩衝寫入層？
+  TRIMAC 遵守 Zero-Mock 原則：嚴禁將本地目錄偽裝為 NAS 掛載點。
+  當 /mnt/n 離線時，直接寫入會失敗。緩衝層確保所有寫入操作
+  仍被記錄並持久化，待掛載恢復後自動回寫，不會丟失任何數據。
+
+4.4 為什麼巡檢間隔設為 15 秒？
+  平衡偵測延遲與系統開銷。15 秒足夠快速應對 NAS 斷電場景，
+  同時不會對系統造成過重輪詢負擔。
+
+4.5 為什麼需要 SHA-256 驗證？
+  確保回寫的數據與原始數據完全一致，防止網絡傳輸或磁碟寫入
+  過程中的數據損壞，符合 TRIMAC v5.7.1 五環節證據鏈要求。
+
+--------------------------------------------------------------------------------
+5. 管理服務指令 (Management Commands)
+--------------------------------------------------------------------------------
+
+5.1 systemd 服務管理
+
+啟動服務：
+  sudo systemctl start trimac-mount-daemon.service
+
+停止服務：
+  sudo systemctl stop trimac-mount-daemon.service
+
+重啟服務：
+  sudo systemctl restart trimac-mount-daemon.service
+
+查看狀態：
+  systemctl status trimac-mount-daemon.service
+
+查看日誌：
+  journalctl -u trimac-mount-daemon.service -f
+  或
+  cat /home/denni/trimac_logs/trimac_mount_daemon.log
+
+啟用開機自動啟動：
+  sudo systemctl enable trimac-mount-daemon.service
+
+5.2 helper 指令 (直接執行)
+
+檢查掛載狀態：
+  /usr/local/bin/trimac-mount-helper status
+
+手動掛載：
+  /usr/local/bin/trimac-mount-helper mount
+
+強制卸載：
+  /usr/local/bin/trimac-mount-helper umount
+
+清理殘留並重建：
+  /usr/local/bin/trimac-mount-helper cleanup
+
+喚醒 Windows SMB：
+  /usr/local/bin/trimac-mount-helper wake
+
+5.3 Python 客戶端庫調用範例
+
+from trimac_mount_client import (
+    write, write_json, write_to_committed_vault,
+    get_stats, get_mount_state, force_flush
+)
+
+# 寫入文件
+write("04_committed_vault/task_001/shard_001.json", b"data")
+
+# 寫入 JSON
+write_json("03_audit_receipts/task_001/receipt.json", {"status": "PASS"})
+
+# 獲取掛載狀態
+state = get_mount_state()  # MountState.HEALTHY / OFFLINE
+
+# 強制刷新緩衝
+stats = force_flush()
+
+5.4 日誌檢查關鍵字
+
+健康：
+  [TRIMAC-MOUNT] DEBUG: check_mount: exists=True, ismount=True
+
+離線：
+  [TRIMAC-MOUNT] WARNING: 掛載點 /mnt/n 不存在或非掛載點
+
+重掛載成功：
+  [TRIMAC-MOUNT] INFO: drvfs 重掛載成功
+  [TRIMAC-MOUNT] WARNING: 掛載狀態變化: 離線 -> 健康
+
+緩衝寫入：
+  [TRIMAC-MOUNT] INFO: 已緩衝: <path> (<bytes> bytes)
+
+--------------------------------------------------------------------------------
+6. 故障排除 (Troubleshooting)
+--------------------------------------------------------------------------------
+
+6.1 /mnt/n 不存在或非掛載點
+  原因：Synology NAS 斷電或 Windows SMB 連線斷開
+  處理：等待 daemon 自動重掛載 (15 秒巡檢)，或手動執行
+        /usr/local/bin/trimac-mount-helper mount
+
+6.2 Helper 執行失敗 (Permission denied)
+  原因：setuid bit 遺失或 helper 未以 root 安裝
+  處理：sudo chown root:root /usr/local/bin/trimac-mount-helper
+        sudo chmod 4755 /usr/local/bin/trimac-mount-helper
+
+6.3 掛載後健康檢查失敗 (5 次重試後仍未健康)
+  原因：Windows SMB 連線尚未建立，或 /proc/mounts 尚未更新
+  處理：等待下一輪巡檢，daemon 會自動重試。可手動執行
+        /usr/local/bin/trimac-mount-helper wake 喚醒 SMB
+
+6.4 緩衝隊列已滿
+  原因：離線時間過長，寫入數據超過 10GB 上限
+  處理：檢查 /home/denni/trimac_buffer/ 目錄，手動清理或擴大
+        MAX_BUFFER_SIZE 配置
+
+6.5 Telegram 通知發送失敗
+  原因：TELEGRAM_BOT_TOKEN 環境變數未設定或 Bot 權限不足
+  處理：在 systemd 服務環境變數中設定 TELEGRAM_BOT_TOKEN，
+        或確認 Bot 可向 TELEGRAM_CHAT_ID 發送訊息
+
+--------------------------------------------------------------------------------
+7. TRIMAC 艦隊整合點 (Fleet Integration)
+--------------------------------------------------------------------------------
+
+7.1 調用權限
+  只有 Jupiter (TRI-CTRL-01) 可直接調度 Earth (:9904)、Felix (:9902)、
+  Perfect (:9903) 與 Saturn (:9120)。掛載守護進程作為基礎設施服務，
+  不屬於調度鏈，但所有支團寫入 /mnt/n 必須經過 trimac_mount_client.py。
+
+7.2 與審核系統關聯
+  審核證書寫入 03_audit_receipts/，PASS 後歸檔至 04_committed_vault/。
+  掛載守護進程確保這兩個區的寫入在 NAS 離線時不會丟失。
+
+7.3 與災難備份關聯
+  hermes-disaster-recovery-backup (03:00 daily) 備份至
+  /mnt/e/Hermes/backups/ (Windows E: 盤)，與 /mnt/n 掛載獨立，
+  不受本守護進程影響。
+
+--------------------------------------------------------------------------------
+結束
+================================================================================
+--------------------------------------------------------------------------------
+8. TRIMAC v5.7.4 研發整合與補丁說明 (2026-11-17)
+--------------------------------------------------------------------------------
+8.1 已修復之關鍵邊界問題 (v1.0.1 / v5.7.4)
+  - 修復 `_load_persisted_buffer()` 重啟載入緩衝時未讀取 `.bin` 檔案的問題，改為統一調用 `_load_entry()`，確保離線期間重啟守護進程仍能完整恢復二進制內容並通過 SHA-256 校驗。
+  - 修復 `BufferWriteLayer.write()` 在 `trimac_mount_client.py` 跨進程導入時誤判 `MountState.HEALTHY` 的問題，新增 `os.path.ismount(MOUNT_POINT)` 實時核心檢查，徹底杜絕寫入未掛載本地殘留目錄。
+  - 新增 `synology_three_brothers/synology_mergerfs_watchdog.sh`，部署於大哥 `TRI-Synas01 (192.168.50.111)` DSM 任務排程器（每 5 分鐘巡檢一次 `.116` 與 `.114` NFS 分支及 `/volume1/TRIMAC-POOL` MergerFS 掛載狀態），實現「三兄弟內部自癒 + 都中樞 `/mnt/n` 自癒」全鏈路自動恢復。

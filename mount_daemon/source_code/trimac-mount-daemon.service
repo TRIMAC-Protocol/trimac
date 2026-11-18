@@ -1,0 +1,26 @@
+[Unit]
+Description=TRIMAC v5.7.1 Mount Daemon (Auto-remount + Buffer Write Layer)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/home/denni/.hermes/installs/953423788c16afe2/environments/64008cbe887048c3b0cf1cdfa6767163/venv/bin/python /home/denni/trimac_mount_daemon.py
+Restart=always
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
+Environment=TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+WorkingDirectory=/home/denni
+StandardOutput=journal
+StandardError=journal
+
+# 安全設置 - 需要 CAP_SYS_ADMIN 進行 mount/umount
+AmbientCapabilities=CAP_SYS_ADMIN CAP_DAC_OVERRIDE
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_OVERRIDE
+NoNewPrivileges=no
+PrivateMounts=no
+MountFlags=shared
+ReadWritePaths=/mnt/n /home/denni/trimac_buffer /home/denni/trimac_logs
+
+[Install]
+WantedBy=multi-user.target
