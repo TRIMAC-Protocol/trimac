@@ -1,0 +1,166 @@
+{
+  "system_version": "5.7.4",
+  "release_date": "2026-11-17",
+  "governance_constitution": "叁壹人工智能系統治理憲章（2026年11月修訂版）",
+  "commercial_nim_engines": {
+    "provider": "nvidia",
+    "main_brain": "nvidia/nemotron-3-ultra-550b-a55b",
+    "auxiliary_vision": "nvidia/nemotron-3.5-super-vl-120b-a12b",
+    "auxiliary_critic": "z-ai/glm5.3-flash",
+    "voice_stt": "local-whisper-large-v3-yue",
+    "voice_tts_male": "zh-HK-WanLungNeural",
+    "voice_tts_female": "zh-HK-HiuGaaiNeural"
+  },
+  "storage_architecture": {
+    "cluster_name": "Synology Three Brothers (TRIMAC-POOL)",
+    "smb_entrypoint": "\\\\192.168.50.111\\TRIMAC-POOL",
+    "wsl_mount_point": "/mnt/n",
+    "mount_daemon": "trimac-mount-daemon v1.0.1 (15s poll + /home/denni/trimac_buffer SHA-256 auto-flush)",
+    "total_capacity": "2.7 TB (MergerFS mfs across .111 DS218+, .116 DS214se, .114 DS214se)",
+    "disaster_backup_vault": "TrueNAS 192.168.50.50 Standalone 3 TB Drive",
+    "four_zone_directories": [
+      "/mnt/n/01_inbox_tasks",
+      "/mnt/n/02_staging_wip",
+      "/mnt/n/03_audit_receipts",
+      "/mnt/n/04_committed_vault"
+    ]
+  },
+  "fleet_topology": {
+    "royal_guard": {
+      "seat": "08",
+      "node_id": "Wildblue",
+      "chinese_name": "劉森藍",
+      "host": "tri-wildblue",
+      "tailscale_ip": "100.91.169.49",
+      "port": 8090,
+      "role": "Royal Wildblue Guard (Supreme Commander Direct Supervision)"
+    },
+    "capital_hub": {
+      "seat": "01",
+      "node_id": "Jupiter",
+      "chinese_name": "劉叁壹 2.0",
+      "code": "TRI-CTRL-01",
+      "host": "tri-holy-01w",
+      "tailscale_ip": "100.80.209.103",
+      "port": 9901,
+      "role": "Primary Orchestrator & Sole Telegram HMI Window"
+    },
+    "audit_tribunal": {
+      "primary": {
+        "seat": "03",
+        "node_id": "Perfect",
+        "chinese_name": "劉叁試",
+        "code": "TRI-PERFECT-03",
+        "host": "tri-perfect",
+        "tailscale_ip": "100.125.85.1",
+        "port": 9903,
+        "endpoint": "http://100.125.85.1:9903/a2a/audit"
+      },
+      "failover_acting": {
+        "seat": "06",
+        "node_id": "Saturn",
+        "chinese_name": "劉叁途",
+        "code": "TRI-SATURN-06",
+        "host": "tri-holy-01w",
+        "bind_ip": "127.0.0.1",
+        "port": 9120,
+        "endpoint": "http://127.0.0.1:9120/a2a/audit",
+        "fail_fast_timeout_sec": 3.0
+      }
+    },
+    "ai_chapters": {
+      "venus_chapter": {
+        "name": "金星號運算支團 (Venus AI Chapter)",
+        "host": "tri-holy-01w (100.80.209.103)",
+        "captain": {
+          "node_id": "Felix",
+          "chinese_name": "劉叁風",
+          "code": "TRI-VENUS-02",
+          "port": 9902
+        },
+        "anti_bypass_lock": {
+          "bind": "127.0.0.1",
+          "header": "X-Chapter-Key",
+          "reject_http_code": 403
+        },
+        "workers": [
+          {
+            "node_id": "Qinglong",
+            "chinese_name": "青龍",
+            "code": "TRI-VENUS-02A",
+            "port": 9921
+          },
+          {
+            "node_id": "Baihu",
+            "chinese_name": "白虎",
+            "code": "TRI-VENUS-02B",
+            "port": 9922
+          },
+          {
+            "node_id": "Zhuque",
+            "chinese_name": "朱雀",
+            "code": "TRI-VENUS-02C",
+            "port": 9923
+          },
+          {
+            "node_id": "Xuanwu",
+            "chinese_name": "玄武",
+            "code": "TRI-VENUS-02D",
+            "port": 9924
+          }
+        ]
+      },
+      "newmoon_chapter": {
+        "name": "新月號運算支團 (NewMoon AI Chapter)",
+        "host": "tri-newmoon (100.80.191.126, Ubuntu 26.04.1 LTS)",
+        "captain": {
+          "node_id": "Earth",
+          "chinese_name": "劉森源",
+          "code": "TRI-EARTH-04",
+          "port": 9904
+        },
+        "anti_bypass_lock": {
+          "bind": "127.0.0.1",
+          "header": "X-Chapter-Key",
+          "reject_http_code": 403
+        },
+        "workers": [
+          {
+            "node_id": "Sun",
+            "chinese_name": "日",
+            "code": "TRI-SUN-04A",
+            "port": 9905
+          },
+          {
+            "node_id": "Moon",
+            "chinese_name": "月",
+            "code": "TRI-MOON-04B",
+            "port": 9906
+          },
+          {
+            "node_id": "Star",
+            "chinese_name": "星",
+            "code": "TRI-STAR-04C",
+            "port": 9907
+          },
+          {
+            "node_id": "Chen",
+            "chinese_name": "辰",
+            "code": "TRI-CHEN-04D",
+            "port": 9908
+          }
+        ]
+      }
+    },
+    "permanently_retired": [
+      "Luna (TRI-LUNA-04)",
+      "Horizon (TRI-HORIZON-05)",
+      "Matthew (old codename)",
+      "Eric (renamed to Earth)",
+      "08 DSD (:9910)",
+      "tri-silver-u (100.91.152.16)",
+      "100.95.207.90 (old NewMoon IP)",
+      "100.72.180.123 (old Perfect IP)"
+    ]
+  }
+}
